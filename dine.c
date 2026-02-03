@@ -7,9 +7,6 @@
 #include <unistd.h>
 
 /* Questions for nico
- 1. should we check argument to see if only an integer, what if set to 0?
- 2. if any of the semaphore inits fail should we return?
- 3. dropping the forks doesnt have a required order right
 
 */
 
@@ -18,22 +15,25 @@
 #endif
 
 int main(int argc, char *argv[]) {
-	print_line();
-	print_label();
-	print_line();
-
 	int sem_check;
 	int thread_check;
 	//first init the printing semaphore, pshared is 0 (for threads)
 	//value is 1, want to be priting by one thread at a time
-	sem_check = sem_init(&print_sem, 0, 1);
+	sem_check = sem_init(&status_sem, 0, 1);
 	if (sem_check == -1) {
 		perror("error on printing semaphore init");
 		return 1;
 	}
 
 	if (argc == 2) {
-		cycles = atoi(argv[1]);
+		char *end;
+		long value = strtol(argv[1], &end, 10);
+		if (value < 0 || *end != '\0') {
+			fprintf(stderr, "Cycles must be a non-negative \
+							 integer\n");
+			return 1;
+		}
+		cycles = (int)value;
 	} else if (argc > 2) {
 		fprintf(stderr, "usage: ./dine <num cycles (optional)>\n");
 		return 1;
@@ -43,6 +43,9 @@ int main(int argc, char *argv[]) {
 		fprintf(stderr, "Need atleast 2 philosophers\n");
 		return 1;
 	}
+	print_line();
+	print_label();
+	print_line();
 
 	init_forks();
 	fork_pos_init();
@@ -64,12 +67,16 @@ int create_philosophers() {
 	int thread_check = 0;
 	for (i = 0; i < NUM_PHILOSOPHERS; i++) {
 		// each id needs to be saved in a variable of some sort,
-		// when passing the address of variable it will change throughout loop
-		// array is easiest to create/hold all ids for NUM_PHILOSOPHERS size
+		// when passing the address of variable it will change 
+		// throughout loop
+		// array is easiest to create/hold all ids for
+		// NUM_PHILOSOPHERS size
 		ids[i] = i;
-		thread_check = pthread_create(&philosophers[i], NULL, phil_cycle, (void *)(&ids[i]));
+		thread_check = pthread_create(&philosophers[i], NULL, 
+						phil_cycle, (void *)(&ids[i]));
 		if (thread_check != 0) {
-			fprintf(stderr, "fail to create philosopher thread %s\n",strerror(thread_check));
+			fprintf(stderr, "fail to create philosopher thread \
+						%s\n",strerror(thread_check));
 			return 1;
 		}
 	}
@@ -82,7 +89,8 @@ int remove_philosophers() {
 	for (i = 0; i < NUM_PHILOSOPHERS; i++) {
 		thread_check = pthread_join(philosophers[i], NULL);
 		if (thread_check != 0) {
-			fprintf(stderr, "fail to remove philosopher thread %s\n",strerror(thread_check));
+			fprintf(stderr, "fail to remove philosopher thread \
+						 %s\n",strerror(thread_check));
 			return 1;
 		}
 	}
@@ -108,7 +116,6 @@ void destroy_forks() {
 		sem_check = sem_destroy(&forks[i]);
 		if (sem_check == -1) {
 			perror("error on fork semaphore destroy");
-			exit(1);
 		}
 	}
 	 
@@ -117,10 +124,11 @@ void destroy_forks() {
 void fork_pos_init() {
 	int i = 0;
 	for (i = 0; i < NUM_FORKS; i++) {
-		fork_possession[i] = NUM_FORKS;
+		fork_possession[i] = -1;
+		prev_fork_possession[i] = -1;
 	}
-	posessions_init = 1;
 }
+
 void get_forks(int id, int left_fork, int right_fork) {
 	// if id is even then pick up right first 
 	int sem_check;
@@ -130,50 +138,45 @@ void get_forks(int id, int left_fork, int right_fork) {
 			perror("fail to wait for even right fork");
 			exit(1);
 		}
-		fork_possession[right_fork] = id;
-		print_states();
+		update_state(id, SAME_STATE, right_fork, id);
 
 		sem_check = sem_wait(&forks[left_fork]);
 		if (sem_check == -1) {
 			perror("fail to wait for even left fork");
 			exit(1);
 		}
-		fork_possession[left_fork] = id;
-		print_states();
+		update_state(id, SAME_STATE, left_fork, id);
 	} else {
 		sem_check = sem_wait(&forks[left_fork]);
 		if (sem_check == -1) {
 			perror("fail to wait for odd left fork");
 			exit(1);
 		}
-		
-		fork_possession[left_fork] = id;
-		print_states();
+		update_state(id, SAME_STATE, left_fork, id);
 
 		sem_check = sem_wait(&forks[right_fork]);
 		if (sem_check == -1) {
 			perror("fail to wait for odd right fork");
 			exit(1);
 		}
-		fork_possession[right_fork] = id;
-		print_states();
+		update_state(id, SAME_STATE, right_fork, id);
 	}
 }
 
-void drop_forks(int left_fork, int right_fork) {
+void drop_forks(int id, int left_fork, int right_fork) {
 	int sem_check;
 	sem_check = sem_post(&forks[left_fork]);
 	if (sem_check == -1) {
 		perror("failed to post left fork");
 	}
-	fork_possession[left_fork] = NUM_FORKS; // clear fork possesion (high num)
-	print_states();
+	//id doesn't matter here
+	update_state(id, SAME_STATE, left_fork, -1);
+
 	sem_check = sem_post(&forks[right_fork]);
 	if (sem_check == -1) {
 		perror("failed to post right fork");
 	}
-	fork_possession[right_fork] = NUM_FORKS; // clear fork possesion (high num)
-	print_states();
+	update_state(id, SAME_STATE, right_fork, -1);
 }
 
 void dawdle() {
@@ -202,24 +205,19 @@ void * phil_cycle(void * phil_id) {
 	int i;
 
 	for (i = 0; i < cycles; i++) {
-		states[id] = CHANGE_STATE;
-		print_states();
+		update_state(id, CHANGE_STATE, NUM_FORKS, NUM_FORKS);
 		get_forks(id, left_fork, right_fork);
-		states[id] = EAT_STATE;
-		print_states();
+		update_state(id, EAT_STATE, NUM_FORKS, NUM_FORKS);
 		dawdle(); // eating
-		states[id] = CHANGE_STATE;
-		print_states();
-		drop_forks(left_fork,right_fork);
-		states[id] = THINK_STATE;
-		print_states();
+		update_state(id,CHANGE_STATE, NUM_FORKS, NUM_FORKS);
+		drop_forks(id, left_fork,right_fork);
+		update_state(id, THINK_STATE, NUM_FORKS, NUM_FORKS);
 		dawdle(); // thinking
 		
-		states[id] = CHANGE_STATE;
-		print_states();
-
 
 	}
+	update_state(id, CHANGE_STATE, NUM_FORKS, NUM_FORKS);
+
 	return NULL;
 
 }
@@ -257,15 +255,67 @@ void print_label() {
 	printf("|\n");
 }
 
-void print_states() {
+//pass SAME_STATE to not update state 
+// pass NUM_FORKS for fork to not update possessions
+void update_state(int id, int state, int fork, int possession) {
 	int sem_check;
-	int i;
-	int j;
-	sem_check = sem_wait(&print_sem);
+	int changed = 0;
+	sem_check = sem_wait(&status_sem);
 	if (sem_check == -1) {
-		perror("fail waiting for print sem");
+		perror("fail waiting for status sem");
 		exit(1);
 	}
+	
+	// printf("here, id:%d state:%d\n",id, state);
+	// printf("states[%d] is %d\n",id, states[id]);
+	if (possession == -1) {
+		printf("fork %d is being dropped by id %d\n",fork, id);
+	}
+	if (fork != NUM_FORKS && fork_possession[fork] != possession) {
+		// printf("we getting here?\n");
+		printf("previously fork %d was owned by %d curr in %d\n",
+				 fork,fork_possession[fork], id);
+		if (fork_possession[fork] == id || 
+				fork_possession[fork] == -1) {
+			fork_possession[fork] = possession;
+			printf("updating fork pos for id:%d, fork %d \
+				now is owned by %d\n", id,fork, 
+				fork_possession[fork]);
+			if (prev_fork_possession[fork] != fork_possession[fork])
+			{
+				changed = 1;
+			}	
+			prev_fork_possession[fork] = fork_possession[fork];
+		}
+		
+	}
+
+	if (state != SAME_STATE && states[id] != state) {
+		// printf("we getting here\n");
+
+		states[id] = state;
+		if (prev_states[id] != states[id]){
+			changed = 1;
+		}	
+		prev_states[id] = states[id];
+	}
+
+	if (changed) {
+		printf("id:%d is printing\n",id);
+		print_states();
+	}
+
+	sem_check = sem_post(&status_sem);
+	if (sem_check == -1) {
+		perror("fail post for status sem");
+		exit(1);
+	}
+
+}
+
+void print_states() {
+	int i;
+	int j;
 	for (i = 0; i < NUM_PHILOSOPHERS; i++) {
 		printf("| ");
 		for (j = 0; j < NUM_FORKS; j++) {
@@ -280,13 +330,9 @@ void print_states() {
 		} else if (states[i] == THINK_STATE) {
 			printf(" Think ");
 		} else {
-			printf("    1  ");
+			printf("       ");
 		}
 	}
 	printf("|\n");
-	sem_check = sem_post(&print_sem);
-	if (sem_check == -1) {
-		perror("fail post for print sem");
-		exit(1);
-	}
+
 }
